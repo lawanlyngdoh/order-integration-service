@@ -37,15 +37,11 @@ def order_request() -> OrderRequest:
 @pytest.mark.anyio
 async def test_submit_order_successfully(order_request: OrderRequest) -> None:
     with respx.mock:
-        route = respx.post(
-            "https://downstream.example.test/orders"
-        ).mock(
+        route = respx.post("https://downstream.example.test/orders").mock(
             return_value=httpx.Response(202)
         )
 
-        async with httpx.AsyncClient(
-            base_url="https://downstream.example.test"
-        ) as http_client:
+        async with httpx.AsyncClient(base_url="https://downstream.example.test") as http_client:
             client = DownstreamOrderClient(http_client)
 
             await client.submit_order(
@@ -54,9 +50,7 @@ async def test_submit_order_successfully(order_request: OrderRequest) -> None:
             )
 
         assert route.called
-        assert route.calls.last.request.headers["X-Correlation-ID"] == (
-            "correlation-123"
-        )
+        assert route.calls.last.request.headers["X-Correlation-ID"] == ("correlation-123")
 
 
 @pytest.mark.anyio
@@ -64,18 +58,14 @@ async def test_retry_after_temporary_connection_failure(
     order_request: OrderRequest,
 ) -> None:
     with respx.mock:
-        route = respx.post(
-            "https://downstream.example.test/orders"
-        ).mock(
+        route = respx.post("https://downstream.example.test/orders").mock(
             side_effect=[
                 httpx.ConnectError("Temporary connection failure"),
                 httpx.Response(202),
             ]
         )
 
-        async with httpx.AsyncClient(
-            base_url="https://downstream.example.test"
-        ) as http_client:
+        async with httpx.AsyncClient(base_url="https://downstream.example.test") as http_client:
             client = DownstreamOrderClient(http_client)
 
             await client.submit_order(
@@ -91,15 +81,11 @@ async def test_rejected_order_is_not_retried(
     order_request: OrderRequest,
 ) -> None:
     with respx.mock:
-        route = respx.post(
-            "https://downstream.example.test/orders"
-        ).mock(
+        route = respx.post("https://downstream.example.test/orders").mock(
             return_value=httpx.Response(400)
         )
 
-        async with httpx.AsyncClient(
-            base_url="https://downstream.example.test"
-        ) as http_client:
+        async with httpx.AsyncClient(base_url="https://downstream.example.test") as http_client:
             client = DownstreamOrderClient(http_client)
 
             with pytest.raises(httpx.HTTPStatusError):
