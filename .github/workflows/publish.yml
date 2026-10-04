@@ -85,3 +85,113 @@ jobs:
 
       - name: Display published digest
         run: echo "Published digest ${{ steps.build.outputs.digest }}"
+
+      - name: Verify GitOps automation token
+        env:
+          GITOPS_TOKEN: ${{ secrets.GITOPS_AUTOMATION_TOKEN }}
+        run: |
+          if [ -z "${GITOPS_TOKEN}" ]; then
+            echo "GITOPS_AUTOMATION_TOKEN is not configured"
+            exit 1
+          fi
+
+      - name: Check out GitOps repository
+        uses: actions/checkout@v7
+        with:
+          repository: lawanlyngdoh/order-integration-gitops
+          token: ${{ secrets.GITOPS_AUTOMATION_TOKEN }}
+          path: gitops
+          fetch-depth: 0
+
+      - name: Open dev deployment pull request
+        working-directory: gitops
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          GH_TOKEN: ${{ secrets.GITOPS_AUTOMATION_TOKEN }}
+          GH_REPO: lawanlyngdoh/order-integration-gitops
+        run: |
+          if [[ ! "${IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Invalid image digest: ${IMAGE_DIGEST}"
+            exit 1
+          fi
+
+          BRANCH_NAME="automation/dev-${SOURCE_SHA}"
+          MANIFEST="apps/order-integration/overlays/dev/kustomization.yaml"
+
+          git fetch origin main
+          git fetch \
+            origin \
+            "refs/heads/${BRANCH_NAME}:refs/remotes/origin/${BRANCH_NAME}" || true
+
+          git switch \
+            --force-create "${BRANCH_NAME}" \
+            origin/main
+
+          python - "${MANIFEST}" "${IMAGE_DIGEST}" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          manifest = Path(sys.argv[1])
+          digest = sys.argv[2]
+
+          pattern = re.compile(
+              r"(?P<prefix>"
+              r"  - name: ghcr\.io/lawanlyngdoh/order-integration-service\n"
+              r"    digest: )"
+              r"sha256:[0-9a-f]{64}"
+          )
+
+          original = manifest.read_text()
+          updated, replacements = pattern.subn(
+              rf"\g<prefix>{digest}",
+              original,
+          )
+
+          if replacements != 1:
+              raise SystemExit(
+                  f"Expected one image digest replacement, found {replacements}"
+              )
+
+          manifest.write_text(updated)
+          PY
+
+          if git diff --quiet -- "${MANIFEST}"; then
+            echo "Dev already references ${IMAGE_DIGEST}"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config \
+            user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add "${MANIFEST}"
+          git commit \
+            --message "Deploy order integration ${SOURCE_SHA:0:12} to dev"
+
+          git push \
+            --force-with-lease \
+            --set-upstream origin \
+            "${BRANCH_NAME}"
+
+          PR_URL="$(
+            gh pr list \
+              --head "${BRANCH_NAME}" \
+              --state open \
+              --json url \
+              --jq '.[0].url'
+          )"
+
+          if [ -z "${PR_URL}" ]; then
+            PR_URL="$(
+              gh pr create \
+                --base main \
+                --head "${BRANCH_NAME}" \
+                --title "Deploy order integration ${SOURCE_SHA:0:12} to dev" \
+                --body "Automated dev promotion from service commit ${SOURCE_SHA}. Image digest: ${IMAGE_DIGEST}."
+            )"
+          fi
+
+          echo "GitOps pull request: ${PR_URL}"
